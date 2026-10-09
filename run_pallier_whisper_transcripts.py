@@ -2,6 +2,11 @@
 Run Whisper transcription (model sizes "base" and "large-v2") over every WAV
 file in WAV_INPUT_DIR, saving each (audio, model_size) result as its own JSON
 file in WHISPER_TRANSCRIPTS_DIR as soon as it is computed.
+
+HSA_OVERRIDE_GFX_VERSION=10.3.0 nohup python -u run_pallier_whisper_transcripts.py &
+disown
+pkill -f run_pallier_whisper_transcripts.py
+
 """
 import argparse
 import logging

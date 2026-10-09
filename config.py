@@ -30,4 +30,5 @@ def get_device() -> str:
     """Return a PyTorch device, including for AMD GPUs via ROCm."""
     # PyTorch exposes ROCm/HIP GPUs through its CUDA-compatible API, so the
     # correct device string is still "cuda" for both NVIDIA and AMD GPUs.
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    # return "cuda" if torch.cuda.is_available() else "cpu"
+    return "cpu"
