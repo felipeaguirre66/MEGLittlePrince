@@ -10,8 +10,10 @@ import mne
 import numpy as np
 import pandas as pd
 import re
+import unicodedata
 
 from config import LISTEN_DIR, PREPROCESSING_DIR, RESULTS_DIR
+from items import WhisperTranscript
 from preprocessing.generate_word_frequency import MEDIAN_ZIPF_FREQUENCY
 
 
@@ -131,6 +133,82 @@ def _save_bad_channel_cache(
             temporary_path.unlink()
 
 
+RUN_TO_CHAPTER = {
+    1: "ch1-3",
+    2: "ch4-6",
+    3: "ch7-9",
+    4: "ch10-12",
+    5: "ch13-14",
+    6: "ch15-19",
+    7: "ch20-22",
+    8: "ch23-25",
+    9: "ch26-27",
+}
+WHISPER_SIZES = ("large-v2", "base")
+
+
+def _load_whisper_words(chapter: str, size: str) -> pd.DataFrame:
+    """Word-level Whisper transcript (text, start, end, confidence) for one chapter file."""
+    res = WhisperTranscript.from_wav_path(chapter, size)
+    words = [
+        {**w, 'file': chapter}
+        for segment in res.whisper_result['segments']
+        for w in segment['words']
+    ]
+    return pd.DataFrame(words).query('file == @chapter').copy()
+
+
+def _preprocess_words(series: pd.Series) -> tuple[list[str], list[int]]:
+    words, row_indices = [], []
+    for row_idx, value in enumerate(series):
+        if pd.isna(value):
+            continue
+        text = unicodedata.normalize("NFKC", str(value)).casefold()
+        tokens = re.findall(r"[^\W_]+", text, flags=re.UNICODE)
+        words.extend(tokens)
+        row_indices.extend([row_idx] * len(tokens))
+    return words, row_indices
+
+
+def _merge_whisper(events: pd.DataFrame, df_whisper: pd.DataFrame, size: str) -> pd.DataFrame:
+    """Align Whisper words to the events' stimulus words and attach them as whisper_{size}_* columns."""
+    import jiwer
+
+    prefix = f"whisper_{size.replace('-', '')}"
+    gt_words, gt_rows = _preprocess_words(events['stimulus'])
+    whisper_words, whisper_rows = _preprocess_words(df_whisper['text'])
+    result = jiwer.process_words(" ".join(gt_words), " ".join(whisper_words))
+
+    matches = []
+    for chunk in result.alignments[0]:
+        gt_indices = range(chunk.ref_start_idx, chunk.ref_end_idx)
+        whisper_indices = range(chunk.hyp_start_idx, chunk.hyp_end_idx)
+        if chunk.type == "equal" or (
+            chunk.type == "substitute" and len(gt_indices) == len(whisper_indices)
+        ):
+            matches.extend((gt_rows[i], whisper_rows[j]) for i, j in zip(gt_indices, whisper_indices))
+
+    mapping = (
+        pd.DataFrame(matches, columns=["gt_row", "whisper_row"])
+        .drop_duplicates()
+        .sort_values(["gt_row", "whisper_row"])
+    )
+    aligned = mapping.merge(df_whisper.reset_index(drop=True), left_on="whisper_row", right_index=True)
+    aligned = aligned.groupby("gt_row").agg(**{
+        f"{prefix}_text": ("text", lambda x: "-".join(x)),
+        f"{prefix}_start": ("start", "min"),
+        f"{prefix}_end": ("end", "max"),
+        f"{prefix}_confidence": ("confidence", "mean"),
+    })
+    merged = events.reset_index(drop=True).join(aligned)
+    print(
+        f"Whisper {size}: WER = {result.wer:.4f}; "
+        f"NaNs in {prefix}_confidence = {int(merged[f'{prefix}_confidence'].isna().sum())}"
+        f" / {len(merged)}"
+    )
+    return merged
+
+
 class Meg:
     def __init__(
         self,
@@ -140,6 +218,7 @@ class Meg:
         detect_bad_channels: bool = False,
         add_features: bool = True,
         baseline_correction: bool = True,
+        merge_whisper: bool = True,
     ):
         """Load a MEG run; optionally add the generated word-frequency feature to events.
 
@@ -149,6 +228,10 @@ class Meg:
 
         When ``baseline_correction`` is True, ``get_grad_by_word`` subtracts each channel's
         mean over the pre-stimulus period (-500 to 0 ms) from that word's epoch.
+
+        When ``merge_whisper`` is True, the saved Whisper transcripts (large-v2 and base) of the
+        run's chapter are aligned to the events' words and added as ``whisper_{largev2,base}_*``
+        columns (text, start, end, confidence); WER and NaN counts are printed.
         """
         self.baseline_correction = baseline_correction
         subject = run01_prefix.split('_')[0]
@@ -241,6 +324,13 @@ class Meg:
                 )
             events = _merge_word_frequency(events, frequency_path)
             events['low_frequency'] = events.zipf_frequency < MEDIAN_ZIPF_FREQUENCY
+        if merge_whisper:
+            run_match = re.search(r'_run-(\d+)(?:_|$)', run01_prefix)
+            if run_match is None:
+                raise ValueError(f'Could not determine run number from {run01_prefix!r}')
+            chapter = RUN_TO_CHAPTER[int(run_match.group(1))]
+            for size in WHISPER_SIZES:
+                events = _merge_whisper(events, _load_whisper_words(chapter, size), size)
         self.events = events
 
         self.grad_picks = [
