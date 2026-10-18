@@ -11,10 +11,54 @@ import numpy as np
 import pandas as pd
 import re
 
-from config import LISTEN_DIR, PREPROCESSING_DIR
+from config import LISTEN_DIR, PREPROCESSING_DIR, RESULTS_DIR
+from preprocessing.generate_word_frequency import MEDIAN_ZIPF_FREQUENCY
 
 
 BAD_CHANNELS_SCHEMA_VERSION = 1
+
+
+def _merge_word_frequency(events: pd.DataFrame, frequency_path: Path) -> pd.DataFrame:
+    """Attach run-level French Zipf frequencies to events by case-insensitive word."""
+    if 'stimulus' not in events.columns:
+        raise ValueError("Events table has no 'stimulus' column")
+
+    frequencies = pd.read_csv(frequency_path, sep=',', dtype={'word': str})
+    required_columns = {'word', 'zipf_frequency'}
+    missing_columns = required_columns.difference(frequencies.columns)
+    if missing_columns:
+        raise ValueError(
+            f"Word-frequency file {frequency_path} is missing columns: "
+            f"{', '.join(sorted(missing_columns))}"
+        )
+    if frequencies['word'].isna().any() or frequencies['zipf_frequency'].isna().any():
+        raise ValueError(f'Word-frequency file contains missing values: {frequency_path}')
+
+    words = frequencies['word'].str.casefold()
+    frequency_data = frequencies.assign(_word=words)
+    frequency_counts = frequency_data.groupby('_word')['zipf_frequency'].nunique()
+    conflicting_words = frequency_counts[frequency_counts > 1].index.tolist()
+    if conflicting_words:
+        raise ValueError(
+            f'Conflicting Zipf frequencies for words in {frequency_path}: '
+            f'{conflicting_words[:10]}'
+        )
+    frequency_by_word = frequency_data.drop_duplicates('_word').set_index('_word')[
+        'zipf_frequency'
+    ]
+
+    event_words = events['stimulus'].astype('string').str.casefold()
+    merged_frequencies = event_words.map(frequency_by_word)
+    if merged_frequencies.isna().any():
+        unmatched_words = events.loc[merged_frequencies.isna(), 'stimulus'].drop_duplicates()
+        raise ValueError(
+            f'No Zipf frequency found for event words in {frequency_path}: '
+            f'{unmatched_words.head(10).tolist()}'
+        )
+
+    events = events.copy()
+    events['zipf_frequency'] = merged_frequencies
+    return events
 
 
 def bad_channels_cache_path(run_prefix: str) -> Path:
@@ -94,7 +138,14 @@ class Meg:
         filter: bool = True,
         maxwell: bool = True,
         detect_bad_channels: bool = False,
+        add_features: bool = True,
     ):
+        """Load a MEG run; optionally add the generated word-frequency feature to events.
+
+        When ``add_features`` is True, the matching file must already exist under
+        ``RESULTS_DIR / 'word_frequency'``. Generate it with
+        ``python -m preprocessing.generate_word_frequency`` first.
+        """
         subject = run01_prefix.split('_')[0]
         meg_dir = LISTEN_DIR / subject / 'ses-01' / 'meg'
 
@@ -169,6 +220,22 @@ class Meg:
         events = pd.read_csv(meg_dir / f"{run01_prefix}_events.tsv", sep='\t')
         # events.tsv onsets are on the acquisition clock (include first_samp); raw.times starts at 0
         events['onset'] = events['onset'] - self.raw.first_samp / self.sfreq
+        if add_features:
+            run_match = re.search(r'_run-(\d+)(?:_|$)', run01_prefix)
+            if run_match is None:
+                raise ValueError(f'Could not determine run number from {run01_prefix!r}')
+            frequency_path = (
+                RESULTS_DIR / 'word_frequency'
+                / f'task-listen_run-{int(run_match.group(1)):02d}_extra_info.tsv'
+            )
+            if not frequency_path.is_file():
+                raise FileNotFoundError(
+                    f'Word-frequency file not found: {frequency_path}. '
+                    'Run python -m preprocessing.generate_word_frequency first, '
+                    'or initialize Meg with add_features=False.'
+                )
+            events = _merge_word_frequency(events, frequency_path)
+            events['low_frequency'] = events.zipf_frequency < MEDIAN_ZIPF_FREQUENCY
         self.events = events
 
         self.grad_picks = [
