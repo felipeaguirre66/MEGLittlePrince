@@ -13,6 +13,7 @@ READ_DIR = DATA_DIR / 'read' / 'ds007524-download'
 LISTEN_DIR = DATA_DIR / 'listen' / 'ds007523-download'
 RESULTS_DIR = Path('/mnt/sda/data-output/phd/Pallier2025_results')
 WHISPER_TRANSCRIPTS_DIR = RESULTS_DIR / 'whisper_transcripts'
+PREPROCESSING_DIR = RESULTS_DIR / 'preprocessing'
 WAV_INPUT_DIR = LISTEN_DIR / 'sourcedata' / 'stimuli' / 'audio'
 
 

@@ -66,6 +66,8 @@ Run with the crosstalk + calibration files above:
 
 The 10 flat channels are unusually many and constant over the whole run. Check them before trusting the result (e.g. plot their variance versus neighbours); the default `h_freq`/flat thresholds (`min_count`, `flat` in `find_bad_channels_maxwell`) can be tuned. Note that the raw recording is MaxShield (internal active shielding) data, which can alter amplitudes of some channels.
 
-## Existing code to adapt
+## Cached detection
 
-`Meg.__init__` in [meg.py](meg.py) does not set `raw.info['bads']` and `get_gradio` picks all 204 gradiometers. After detection, exclude the bads (`raw.info['bads']`) from `grad_picks`, or run `maxwell_filter` first so they are interpolated.
+Run `python preprocessing/bad_channels_detection.py [--workers N]` to detect bad channels for each run with a progress bar. BLAS threads are pinned to 1 (≈31 s per run versus ≈400 s with default threading, same result). Each worker peaks at ~5 GB of RAM, so the default is 1 worker; use `--workers 2` only with ≥12 GB free. Failed runs are reported at the end and retried on the next invocation. Valid results are stored as `bad_channels.json` under `PREPROCESSING_DIR/sub-XX/<run-prefix>/meg/`; runs with valid caches are skipped, so interrupted batch runs can be resumed.
+
+The cache records noisy and flat channels separately, along with the run and input-file metadata and MNE version. A missing, malformed, or stale cache is recomputed. `Meg(..., detect_bad_channels=True)` performs detection and saves the result without Maxwell filtering; `Meg(..., maxwell=True)` loads the cache when valid (otherwise warns and detects), marks the channels bad, and then applies Maxwell filtering.
