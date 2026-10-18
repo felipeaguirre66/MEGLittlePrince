@@ -3,9 +3,10 @@ import os
 
 # The Radeon RX 6600 XT (gfx1032) needs this ROCm compatibility override for
 # GPU kernels in the current ROCm PyTorch build. Set it before importing torch.
+# torch itself is deliberately not imported here: nothing in this module uses it, and importing
+# it costs seconds and ~1 GB of RAM in every MEG script that imports config.
 os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
 
-import torch
 from dataclasses import dataclass
 
 DATA_DIR = Path('/mnt/sda/data-output/phd/Pallier2025')

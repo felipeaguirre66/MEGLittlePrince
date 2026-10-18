@@ -139,13 +139,18 @@ class Meg:
         maxwell: bool = True,
         detect_bad_channels: bool = False,
         add_features: bool = True,
+        baseline_correction: bool = True,
     ):
         """Load a MEG run; optionally add the generated word-frequency feature to events.
 
         When ``add_features`` is True, the matching file must already exist under
         ``RESULTS_DIR / 'word_frequency'``. Generate it with
         ``python -m preprocessing.generate_word_frequency`` first.
+
+        When ``baseline_correction`` is True, ``get_grad_by_word`` subtracts each channel's
+        mean over the pre-stimulus period (-500 to 0 ms) from that word's epoch.
         """
+        self.baseline_correction = baseline_correction
         subject = run01_prefix.split('_')[0]
         meg_dir = LISTEN_DIR / subject / 'ses-01' / 'meg'
 
@@ -271,6 +276,8 @@ class Meg:
         after_start_ms: float = 800,
     ) -> np.ndarray:
         """Gradiometer signal from `before_start_ms` to `after_start_ms` around the onset of events row `word_idx`.
+
+        With `baseline_correction`, the per-channel mean over `before_start_ms` to 0 ms is subtracted.
         """
         onset_sample = round(self.events.loc[word_idx, 'onset'] * self.sfreq)
         start = onset_sample + round(before_start_ms * self.sfreq / 1000)
@@ -278,4 +285,16 @@ class Meg:
         if start < 0 or stop > self.raw.n_times:
             raise ValueError(f"Window [{start}, {stop}) is outside the raw ({self.raw.n_times} samples)")
         data = self.get_grad(start, stop)
-        return data
+        if not self.baseline_correction:
+            return data
+
+        baseline_start = onset_sample + round(before_start_ms * self.sfreq / 1000)
+        if baseline_start < 0:
+            raise ValueError(f"Baseline starts before the raw ({baseline_start} < 0)")
+        if baseline_start >= start and onset_sample <= stop:
+            baseline = data[:, baseline_start - start:onset_sample - start]
+        else:
+            baseline = self.get_grad(baseline_start, onset_sample)
+        if baseline.shape[1] == 0:
+            raise ValueError("Baseline window is empty")
+        return data - baseline.mean(axis=1, keepdims=True)
