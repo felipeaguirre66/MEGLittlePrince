@@ -20,6 +20,8 @@ from whisper_transcripts import get_transcript
 
 MODEL_SIZES = ["base", "large-v2"]
 LOGS_DIR = Path(__file__).resolve().parent / "logs"
+MEDIAN_LARGE_CONFIDENCE = 0.883
+MEDIAN_BASE_CONFIDENCE = 0.962
 
 logger = get_logger()
 

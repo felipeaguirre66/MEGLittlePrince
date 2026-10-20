@@ -15,7 +15,7 @@ import unicodedata
 from config import LISTEN_DIR, PREPROCESSING_DIR, RESULTS_DIR
 from items import WhisperTranscript
 from preprocessing.generate_word_frequency import MEDIAN_ZIPF_FREQUENCY
-
+from run_pallier_whisper_transcripts import MEDIAN_LARGE_CONFIDENCE, MEDIAN_BASE_CONFIDENCE
 
 BAD_CHANNELS_SCHEMA_VERSION = 1
 
@@ -218,20 +218,18 @@ class Meg:
         detect_bad_channels: bool = False,
         add_features: bool = True,
         baseline_correction: bool = True,
-        merge_whisper: bool = True,
     ):
-        """Load a MEG run; optionally add the generated word-frequency feature to events.
+        """Load a MEG run; optionally add word-frequency and Whisper features to events.
 
-        When ``add_features`` is True, the matching file must already exist under
+        When ``add_features`` is True, the matching word-frequency file must already exist under
         ``RESULTS_DIR / 'word_frequency'``. Generate it with
-        ``python -m preprocessing.generate_word_frequency`` first.
+        ``python -m preprocessing.generate_word_frequency`` first. Saved Whisper transcripts
+        (large-v2 and base) of the run's chapter are also aligned to the events' words and added
+        as ``whisper_{largev2,base}_*`` columns (text, start, end, confidence); WER and NaN counts
+        are printed.
 
         When ``baseline_correction`` is True, ``get_grad_by_word`` subtracts each channel's
         mean over the pre-stimulus period (-500 to 0 ms) from that word's epoch.
-
-        When ``merge_whisper`` is True, the saved Whisper transcripts (large-v2 and base) of the
-        run's chapter are aligned to the events' words and added as ``whisper_{largev2,base}_*``
-        columns (text, start, end, confidence); WER and NaN counts are printed.
         """
         self.baseline_correction = baseline_correction
         subject = run01_prefix.split('_')[0]
@@ -324,13 +322,14 @@ class Meg:
                 )
             events = _merge_word_frequency(events, frequency_path)
             events['low_frequency'] = events.zipf_frequency < MEDIAN_ZIPF_FREQUENCY
-        if merge_whisper:
-            run_match = re.search(r'_run-(\d+)(?:_|$)', run01_prefix)
-            if run_match is None:
-                raise ValueError(f'Could not determine run number from {run01_prefix!r}')
             chapter = RUN_TO_CHAPTER[int(run_match.group(1))]
             for size in WHISPER_SIZES:
                 events = _merge_whisper(events, _load_whisper_words(chapter, size), size)
+            # Fill NaNs with slightly above the median to avoid false low confidence flags
+            events['whisper_largev2_confidence'] = events['whisper_largev2_confidence'].fillna(MEDIAN_LARGE_CONFIDENCE + 1e-6)
+            events['whisper_base_confidence'] = events['whisper_base_confidence'].fillna(MEDIAN_BASE_CONFIDENCE + 1e-6)
+            events['low_large_confidence'] = events.whisper_largev2_confidence < MEDIAN_LARGE_CONFIDENCE
+            events['low_base_confidence'] = events.whisper_base_confidence < MEDIAN_BASE_CONFIDENCE
         self.events = events
 
         self.grad_picks = [
